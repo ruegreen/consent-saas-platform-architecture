@@ -1,0 +1,44 @@
+%% Tattoo Release Online (TRO) — High-Level Architecture
+%% Render with any Mermaid-compatible tool (GitHub, VS Code, mermaid.live)
+
+graph TB
+    subgraph Web["React Admin Console (Browser)"]
+        ADMIN["Shop Admin"]
+        FORMS["Form Builder"]
+        ARTISTS["Artist Manager"]
+        CLAUSES["Clause Manager"]
+        SUBS["Submission Viewer"]
+        KIOSK_ADMIN["Kiosk User Manager"]
+    end
+
+    subgraph Mobile["React Native Kiosk App (Tablet)"]
+        LOGIN["Kiosk Login"]
+        SELECT["Form Selection"]
+        WIZARD["Consent Wizard"]
+        SIG["Signature Capture"]
+        CAM["Photo Capture"]
+    end
+
+    subgraph API["Node.js / Express API Server"]
+        AUTH["Auth Layer\n(API Key + PBKDF2 + JWT)"]
+        ROUTES["REST Routes\n(/api/v1/Consent/*)"]
+        MAILER["Email Service\n(Gmail OAuth2)"]
+        DOCS["Swagger UI\n(/api-docs)"]
+    end
+
+    subgraph Data["Data & Storage"]
+        MONGO["MongoDB Atlas\n(Tenant Documents +\nSubmissions Collection)"]
+        CLOUDINARY["Cloudinary CDN\n(Signatures + Photos)"]
+    end
+
+    Web --> AUTH
+    Mobile --> AUTH
+    AUTH --> ROUTES
+    ROUTES --> MONGO
+    ROUTES --> CLOUDINARY
+    ROUTES --> MAILER
+
+    style Web fill:#61dafb,stroke:#333,color:#000
+    style Mobile fill:#a4c639,stroke:#333,color:#000
+    style API fill:#68a063,stroke:#333,color:#fff
+    style Data fill:#f5a623,stroke:#333,color:#000
