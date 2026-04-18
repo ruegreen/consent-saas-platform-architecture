@@ -322,6 +322,21 @@ interface UserRoles {
 
 ---
 
+## Technical Documentation
+
+For detailed technical implementation and architecture deep-dives, see:
+
+- **[Architecture Diagrams](diagrams.md)** - System architecture, workflows, and multi-brand data flow diagrams
+- **[Database Design](data-model.md)** - Brand-first data model, schema design, and isolation patterns  
+- **[API Architecture](api-design.md)** - Brand-aware REST API design with middleware and routing
+- **[Authentication & Security](authentication.md)** - Cookie-based auth, role-based access, and brand scoping
+- **[State Management](state-management.md)** - React Context patterns with TypeScript and brand theming
+- **[File Storage](media-storage.md)** - MongoDB GridFS implementation with brand-isolated file handling
+
+These technical documents demonstrate the **enterprise-grade architecture** designed for unlimited brand scaling, complete data isolation, and modern development practices across the entire platform.
+
+---
+
 ## Key Innovation: Platform Business Model
 
 **Architectural Insight**: Transformed a **single-purpose tattoo application** into a **generic consent platform** that can serve unlimited brands across any industry requiring consent capture.
