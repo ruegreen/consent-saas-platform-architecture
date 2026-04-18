@@ -1,237 +1,612 @@
 # Pattern: Media Storage & Digital Signatures
 
-## Cloudinary Integration
+## MongoDB Native File Storage
 
-All media assets (client photos, digital signatures, form title images) are stored in Cloudinary with direct client-side uploads. The API server never handles image binary data — clients upload directly to Cloudinary and store the returned references in MongoDB.
+All media assets (client photos, digital signatures, form assets) are stored directly in MongoDB using GridFS, providing complete brand isolation and eliminating external service dependencies. The platform handles image uploads through the API with brand-aware storage and retrieval.
 
 ### Upload Flow
 
 ```
-Client (Web/Mobile)                    Cloudinary                    MongoDB
+Client (Web/Mobile)                    API Gateway                    MongoDB GridFS
         │                                  │                           │
-        │  1. Prepare upload               │                           │
-        │  (SHA-1 sign request)            │                           │
+        │  1. Prepare upload with brand    │                           │
+        │  context and CSRF token          │                           │
         │                                  │                           │
         │  2. POST multipart/form-data     │                           │
-        │  {file, api_key, timestamp,      │                           │
-        │   signature, upload_preset}      │                           │
+        │  {file, brandId, metadata}       │                           │
         │─────────────────────────────────→│                           │
         │                                  │                           │
-        │  3. Response:                    │                           │
-        │  {secure_url, public_id,         │                           │
-        │   format, bytes, ...}            │                           │
-        │←─────────────────────────────────│                           │
+        │                                  │  3. Validate brand scope │
+        │                                  │  and file constraints    │
         │                                  │                           │
-        │  4. Store references in submission│                           │
-        │  {ConsentPhotoId: secure_url,    │                           │
-        │   ConsentPhotoIdPublicId: id}    │                           │
-        │──────────────────────────────────────────────────────────────→│
+        │                                  │  4. Store in GridFS with │
+        │                                  │  brand isolation         │
+        │                                  │─────────────────────────→│
+        │                                  │                           │
+        │  5. Response:                    │  MongoDB ObjectId and    │
+        │  {fileId, url, metadata}         │  file metadata           │
+        │←─────────────────────────────────│←─────────────────────────│
         │                                  │                           │
 ```
 
-### Upload Authentication (SHA-1 Signing)
+### Brand-Aware File Upload
 
-```javascript
-// Client-side upload signing — prevents unauthorized uploads
-// without exposing the full API secret
-
-function signUpload(paramsToSign) {
-    const timestamp = Math.round(Date.now() / 1000);
-
-    // Build the string to sign (alphabetically sorted params + secret)
-    const stringToSign = Object.keys(paramsToSign)
-        .sort()
-        .map(key => `${key}=${paramsToSign[key]}`)
-        .join('&') + API_SECRET;
-
-    // SHA-1 hash
-    const signature = sha1(stringToSign);
-
-    return { timestamp, signature };
-}
-
-// Upload to Cloudinary
-async function uploadToCloudinary(file) {
-    const timestamp = Math.round(Date.now() / 1000);
-    const paramsToSign = { timestamp, upload_preset: UPLOAD_PRESET };
-    const signature = signUpload(paramsToSign);
-
+```typescript
+// File upload service with brand isolation
+export class FileUploadService {
+  async uploadFile(
+    file: File,
+    brandId: string,
+    category: 'signature' | 'photo' | 'document'
+  ): Promise<FileUploadResult> {
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('api_key', API_KEY);
-    formData.append('timestamp', timestamp);
-    formData.append('signature', signature);
-    formData.append('upload_preset', UPLOAD_PRESET);
+    formData.append('brandId', brandId);
+    formData.append('category', category);
+    formData.append('metadata', JSON.stringify({
+      originalName: file.name,
+      contentType: file.type,
+      uploadedAt: new Date().toISOString()
+    }));
 
-    const response = await fetch(CLOUDINARY_UPLOAD_URL, {
-        method: 'POST',
-        body: formData
+    const response = await fetch('/api/v1/files/upload', {
+      method: 'POST',
+      body: formData,
+      credentials: 'include', // Include CSRF cookie
+      headers: {
+        'X-Brand-Context': brandId
+      }
     });
 
+    if (!response.ok) {
+      throw new Error(`Upload failed: ${response.statusText}`);
+    }
+
     return response.json();
-    // Returns: { secure_url, public_id, format, bytes, ... }
+  }
+
+  async getFileUrl(fileId: string, brandId: string): Promise<string> {
+    return `/api/v1/files/${fileId}?brand=${brandId}`;
+  }
+
+  async deleteFile(fileId: string, brandId: string): Promise<void> {
+    await fetch(`/api/v1/files/${fileId}`, {
+      method: 'DELETE',
+      credentials: 'include',
+      headers: {
+        'X-Brand-Context': brandId
+      }
+    });
+  }
 }
 ```
 
-### Asset Deletion
+### Server-Side File Handling
 
-```javascript
-// Clean up assets when submissions are deleted
-async function deleteFromCloudinary(publicId) {
-    const timestamp = Math.round(Date.now() / 1000);
-    const signature = signUpload({
-        public_id: publicId,
-        timestamp
-    });
+```typescript
+// Express route for brand-aware file uploads
+import { GridFSBucket, MongoClient } from 'mongodb';
+import multer from 'multer';
 
-    await fetch(CLOUDINARY_DESTROY_URL, {
-        method: 'POST',
-        body: JSON.stringify({
-            public_id: publicId,
-            api_key: API_KEY,
-            timestamp,
-            signature
-        })
-    });
-}
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB limit
+    files: 1
+  },
+  fileFilter: (req, file, cb) => {
+    // Validate file types
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type'));
+    }
+  }
+});
+
+router.post('/files/upload', 
+  brandContext,           // Inject brand from hostname
+  requireAuth,            // Require authentication
+  upload.single('file'),  // Handle multipart upload
+  async (req, res) => {
+    try {
+      const { brandId } = req;
+      const { category } = req.body;
+      const file = req.file;
+
+      if (!file) {
+        return res.status(400).json({ error: 'No file provided' });
+      }
+
+      // Create GridFS bucket with brand-specific naming
+      const bucket = new GridFSBucket(db, {
+        bucketName: `files_${brandId}`
+      });
+
+      // Upload stream with metadata
+      const uploadStream = bucket.openUploadStream(file.originalname, {
+        metadata: {
+          brandId,
+          category,
+          originalName: file.originalname,
+          contentType: file.mimetype,
+          uploadedBy: req.user.id,
+          uploadedAt: new Date()
+        }
+      });
+
+      // Write file data to GridFS
+      uploadStream.write(file.buffer);
+      uploadStream.end();
+
+      uploadStream.on('finish', () => {
+        res.json({
+          fileId: uploadStream.id.toString(),
+          filename: file.originalname,
+          contentType: file.mimetype,
+          size: file.size,
+          url: `/api/v1/files/${uploadStream.id}`
+        });
+      });
+
+      uploadStream.on('error', (error) => {
+        console.error('GridFS upload error:', error);
+        res.status(500).json({ error: 'Upload failed' });
+      });
+
+    } catch (error) {
+      console.error('File upload error:', error);
+      res.status(500).json({ error: 'Upload failed' });
+    }
+  }
+);
+
+// File retrieval with brand isolation
+router.get('/files/:fileId', 
+  brandContext,
+  async (req, res) => {
+    try {
+      const { fileId } = req.params;
+      const { brandId } = req;
+
+      const bucket = new GridFSBucket(db, {
+        bucketName: `files_${brandId}`
+      });
+
+      // Find file and verify brand ownership
+      const files = await bucket.find({
+        _id: new ObjectId(fileId),
+        'metadata.brandId': brandId
+      }).toArray();
+
+      if (files.length === 0) {
+        return res.status(404).json({ error: 'File not found' });
+      }
+
+      const file = files[0];
+
+      // Set appropriate headers
+      res.set({
+        'Content-Type': file.metadata.contentType,
+        'Content-Length': file.length.toString(),
+        'Cache-Control': 'private, max-age=3600', // 1 hour cache
+      });
+
+      // Stream file to response
+      const downloadStream = bucket.openDownloadStream(file._id);
+      downloadStream.pipe(res);
+
+    } catch (error) {
+      console.error('File retrieval error:', error);
+      res.status(500).json({ error: 'File retrieval failed' });
+    }
+  }
+);
 ```
 
 ## Digital Signature Capture
 
-### Web (React Admin Console)
+### Web-Based Signature (React)
 
-```javascript
-// react-signature-canvas — canvas-based signature capture
+```typescript
+import { useRef, useCallback } from 'react';
 import SignatureCanvas from 'react-signature-canvas';
 
-function SignaturePad({ onSave }) {
-    const sigRef = useRef();
-
-    const handleSave = () => {
-        if (sigRef.current.isEmpty()) return;
-
-        // Export as base64 PNG
-        const dataUrl = sigRef.current.toDataURL('image/png');
-
-        // Upload to Cloudinary
-        const cloudinaryResult = await uploadToCloudinary(dataUrl);
-
-        onSave({
-            signatureUrl: cloudinaryResult.secure_url,
-            signaturePublicId: cloudinaryResult.public_id
-        });
-    };
-
-    const handleClear = () => sigRef.current.clear();
-
-    return (
-        <div>
-            <SignatureCanvas
-                ref={sigRef}
-                penColor="black"
-                canvasProps={{
-                    width: 500,
-                    height: 200,
-                    className: 'signature-canvas'
-                }}
-            />
-            <button onClick={handleClear}>Clear</button>
-            <button onClick={handleSave}>Accept Signature</button>
-        </div>
-    );
+interface SignaturePadProps {
+  onSave: (signatureData: string) => void;
+  brandTheme?: BrandTheme;
 }
-```
 
-### Mobile (React Native Kiosk)
+export function SignaturePad({ onSave, brandTheme }: SignaturePadProps) {
+  const sigRef = useRef<SignatureCanvas>(null);
 
-```javascript
-// react-native-signature-canvas — touch-optimized for tablets
-import SignatureScreen from 'react-native-signature-canvas';
+  const handleSave = useCallback(async () => {
+    if (!sigRef.current || sigRef.current.isEmpty()) {
+      return;
+    }
 
-function MobileSignature({ onSave }) {
-    const sigRef = useRef();
+    // Export as PNG data URL
+    const signatureData = sigRef.current.toDataURL('image/png', 1.0);
+    
+    // Upload to platform storage
+    const fileUploadService = new FileUploadService();
+    const blob = await fetch(signatureData).then(r => r.blob());
+    const file = new File([blob], 'signature.png', { type: 'image/png' });
+    
+    const uploadResult = await fileUploadService.uploadFile(
+      file,
+      brandContext.brandId,
+      'signature'
+    );
 
-    const handleSignature = (signature) => {
-        // signature is a base64 data URL
-        const cloudinaryResult = await uploadToCloudinary(signature);
-        onSave({
-            signatureUrl: cloudinaryResult.secure_url,
-            signaturePublicId: cloudinaryResult.public_id
-        });
-    };
+    onSave(uploadResult.url);
+  }, [onSave, brandContext]);
 
-    return (
-        <SignatureScreen
-            ref={sigRef}
-            onOK={handleSignature}
-            descriptionText="Sign above"
-            clearText="Clear"
-            confirmText="Accept"
-            webStyle={`.m-signature-pad { height: 300px; }`}
+  const handleClear = useCallback(() => {
+    sigRef.current?.clear();
+  }, []);
+
+  return (
+    <div className="signature-container" style={{
+      '--signature-border': brandTheme?.primaryColor || '#ccc'
+    } as React.CSSProperties}>
+      <div className="signature-instructions">
+        <p>Please sign in the box below:</p>
+      </div>
+      
+      <div className="signature-canvas-container">
+        <SignatureCanvas
+          ref={sigRef}
+          penColor={brandTheme?.textColor || '#000000'}
+          backgroundColor="#ffffff"
+          canvasProps={{
+            width: 500,
+            height: 200,
+            className: 'signature-canvas'
+          }}
         />
-    );
+      </div>
+      
+      <div className="signature-controls">
+        <button 
+          type="button" 
+          onClick={handleClear}
+          className="btn-secondary"
+        >
+          Clear Signature
+        </button>
+        <button 
+          type="button" 
+          onClick={handleSave}
+          className="btn-primary"
+          style={{
+            backgroundColor: brandTheme?.primaryColor
+          }}
+        >
+          Accept Signature
+        </button>
+      </div>
+    </div>
+  );
 }
 ```
 
-## Photo Capture
+### Mobile-Optimized Signature Capture
 
-### Mobile (expo-camera)
+```typescript
+// Touch-optimized signature capture for mobile devices
+import { useRef, useState, useCallback } from 'react';
 
-```javascript
-import { Camera } from 'expo-camera';
+interface MobileSignatureProps {
+  onSave: (signatureData: string) => void;
+  brandTheme?: BrandTheme;
+}
 
-function PhotoCapture({ onCapture }) {
-    const cameraRef = useRef();
-    const [hasPermission, setHasPermission] = useState(null);
+export function MobileSignatureCapture({ onSave, brandTheme }: MobileSignatureProps) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [hasSignature, setHasSignature] = useState(false);
 
-    useEffect(() => {
-        Camera.requestCameraPermissionsAsync()
-            .then(({ status }) => setHasPermission(status === 'granted'));
-    }, []);
+  const startDrawing = useCallback((e: React.TouchEvent | React.MouseEvent) => {
+    setIsDrawing(true);
+    setHasSignature(true);
+    
+    const canvas = canvasRef.current;
+    if (!canvas) return;
 
-    const takePicture = async () => {
-        const photo = await cameraRef.current.takePictureAsync({
-            quality: 0.7,     // Balance quality vs upload size
-            base64: true       // Include base64 for direct Cloudinary upload
-        });
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
 
-        const cloudinaryResult = await uploadToCloudinary(photo.uri);
-        onCapture({
-            photoUrl: cloudinaryResult.secure_url,
-            photoPublicId: cloudinaryResult.public_id
-        });
+    const rect = canvas.getBoundingClientRect();
+    const x = 'touches' in e ? 
+      e.touches[0].clientX - rect.left : 
+      e.clientX - rect.left;
+    const y = 'touches' in e ? 
+      e.touches[0].clientY - rect.top : 
+      e.clientY - rect.top;
+
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+  }, []);
+
+  const draw = useCallback((e: React.TouchEvent | React.MouseEvent) => {
+    if (!isDrawing) return;
+    e.preventDefault();
+
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const x = 'touches' in e ? 
+      e.touches[0].clientX - rect.left : 
+      e.clientX - rect.left;
+    const y = 'touches' in e ? 
+      e.touches[0].clientY - rect.top : 
+      e.clientY - rect.top;
+
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = brandTheme?.textColor || '#000000';
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.lineTo(x, y);
+    ctx.stroke();
+  }, [isDrawing, brandTheme]);
+
+  const stopDrawing = useCallback(() => {
+    setIsDrawing(false);
+  }, []);
+
+  const clearSignature = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    setHasSignature(false);
+  }, []);
+
+  const saveSignature = useCallback(async () => {
+    const canvas = canvasRef.current;
+    if (!canvas || !hasSignature) return;
+
+    // Convert canvas to blob
+    canvas.toBlob(async (blob) => {
+      if (!blob) return;
+
+      const file = new File([blob], 'signature.png', { type: 'image/png' });
+      const fileUploadService = new FileUploadService();
+      
+      const uploadResult = await fileUploadService.uploadFile(
+        file,
+        brandContext.brandId,
+        'signature'
+      );
+
+      onSave(uploadResult.url);
+    }, 'image/png', 1.0);
+  }, [hasSignature, onSave, brandContext]);
+
+  return (
+    <div className="mobile-signature-container">
+      <h3 style={{ color: brandTheme?.primaryColor }}>
+        Digital Signature Required
+      </h3>
+      
+      <div className="signature-canvas-wrapper">
+        <canvas
+          ref={canvasRef}
+          width={350}
+          height={200}
+          className="mobile-signature-canvas"
+          onTouchStart={startDrawing}
+          onTouchMove={draw}
+          onTouchEnd={stopDrawing}
+          onMouseDown={startDrawing}
+          onMouseMove={draw}
+          onMouseUp={stopDrawing}
+          onMouseLeave={stopDrawing}
+          style={{
+            border: `2px solid ${brandTheme?.primaryColor || '#ccc'}`,
+            touchAction: 'none' // Prevent scrolling while drawing
+          }}
+        />
+        <div className="signature-placeholder">
+          {!hasSignature && (
+            <span>Sign here with your finger or mouse</span>
+          )}
+        </div>
+      </div>
+
+      <div className="signature-actions">
+        <button
+          type="button"
+          onClick={clearSignature}
+          className="btn btn-outline"
+          disabled={!hasSignature}
+        >
+          Clear
+        </button>
+        <button
+          type="button"
+          onClick={saveSignature}
+          className="btn btn-primary"
+          disabled={!hasSignature}
+          style={{
+            backgroundColor: brandTheme?.primaryColor,
+            borderColor: brandTheme?.primaryColor
+          }}
+        >
+          Accept Signature
+        </button>
+      </div>
+    </div>
+  );
+}
+```
+
+## Photo Capture Component
+
+```typescript
+// File-based photo upload with optional camera access
+import { useCallback, useRef, useState } from 'react';
+
+interface PhotoCaptureProps {
+  onCapture: (fileUrl: string) => void;
+  brandTheme?: BrandTheme;
+  required?: boolean;
+}
+
+export function PhotoCapture({ onCapture, brandTheme, required }: PhotoCaptureProps) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+
+  const handleFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsUploading(true);
+
+    try {
+      // Create preview
+      const preview = URL.createObjectURL(file);
+      setPreviewUrl(preview);
+
+      // Upload to platform storage
+      const fileUploadService = new FileUploadService();
+      const uploadResult = await fileUploadService.uploadFile(
+        file,
+        brandContext.brandId,
+        'photo'
+      );
+
+      onCapture(uploadResult.url);
+    } catch (error) {
+      console.error('Photo upload failed:', error);
+      alert('Photo upload failed. Please try again.');
+    } finally {
+      setIsUploading(false);
+    }
+  }, [onCapture, brandContext]);
+
+  const triggerFileSelect = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  const removePhoto = useCallback(() => {
+    setPreviewUrl(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  }, []);
+
+  return (
+    <div className="photo-capture-container">
+      <h3 style={{ color: brandTheme?.primaryColor }}>
+        Photo Upload {required && <span className="required">*</span>}
+      </h3>
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        onChange={handleFileSelect}
+        style={{ display: 'none' }}
+        capture="environment" // Prefer rear camera on mobile
+      />
+
+      {previewUrl ? (
+        <div className="photo-preview">
+          <img src={previewUrl} alt="Captured photo" />
+          <div className="photo-actions">
+            <button
+              type="button"
+              onClick={removePhoto}
+              className="btn btn-outline"
+            >
+              Remove
+            </button>
+            <button
+              type="button"
+              onClick={triggerFileSelect}
+              className="btn btn-secondary"
+            >
+              Retake
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div 
+          className="photo-placeholder"
+          onClick={triggerFileSelect}
+          style={{
+            borderColor: brandTheme?.primaryColor,
+            color: brandTheme?.textColor
+          }}
+        >
+          <div className="photo-icon">📸</div>
+          <p>Tap to {window.navigator.mediaDevices ? 'take photo' : 'select photo'}</p>
+          {isUploading && <div className="uploading">Uploading...</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+## File Reference Storage
+
+All uploaded files are referenced in submission documents with brand isolation:
+
+```typescript
+// Submission document with file references
+interface ConsentSubmission {
+  _id: ObjectId;
+  brandId: ObjectId;
+  tenantId: ObjectId;
+  formId: ObjectId;
+  
+  // Subject information
+  subject: {
+    name: string;
+    email?: string;
+    photos: {
+      subject?: string;      // MongoDB file URL
+      identification?: string;
     };
-
-    return (
-        <Camera ref={cameraRef} type={Camera.Constants.Type.front}>
-            <TouchableOpacity onPress={takePicture}>
-                <Text>Take Photo</Text>
-            </TouchableOpacity>
-        </Camera>
-    );
+    signature?: string;      // MongoDB file URL
+  };
+  
+  // Guardian information (if applicable)
+  guardian?: {
+    name: string;
+    relationship: string;
+    signature?: string;      // MongoDB file URL
+  };
+  
+  // File metadata for cleanup
+  fileReferences: {
+    fileId: ObjectId;
+    category: 'photo' | 'signature';
+    uploadedAt: Date;
+  }[];
+  
+  submittedAt: Date;
+  ip?: string;
+  userAgent?: string;
 }
 ```
 
-## Asset Reference Storage
-
-Both photos and signatures are stored as Cloudinary references in the submission document:
-
-```javascript
-// Submission document stores URLs + public_ids
-{
-    ConsentPhotoId: "https://res.cloudinary.com/dn8exiz00/image/upload/v123/abc.jpg",
-    ConsentPhotoIdPublicId: "abc",
-
-    ConsentSignature: "https://res.cloudinary.com/dn8exiz00/image/upload/v456/def.png",
-    ConsentSignaturePublicId: "def",
-
-    // Guardian signature (when applicable)
-    ConsentGuardianSignature: "https://res.cloudinary.com/.../ghi.png",
-    ConsentGuardianSignaturePublicId: "ghi"
-}
-```
-
-The `public_id` is stored separately from the URL to enable:
-1. **Asset deletion** — Cloudinary requires `public_id` for destroy operations
-2. **URL regeneration** — If CDN URLs change, assets can be re-referenced by `public_id`
-3. **Transformation** — Cloudinary transformations can be applied dynamically using `public_id`
+The MongoDB GridFS approach provides:
+1. **Brand Isolation** - Files stored in brand-specific buckets
+2. **No External Dependencies** - All data stays within MongoDB Atlas
+3. **Automatic Cleanup** - File deletion when submissions are removed
+4. **Scalable Storage** - GridFS handles large files efficiently
+5. **Security** - Files are only accessible through authenticated API endpoints
+6. **Backup Consistency** - Files included in standard MongoDB backup procedures

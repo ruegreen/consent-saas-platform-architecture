@@ -1,103 +1,98 @@
-# Architecture Diagrams — Tattoo Release Online (TRO)
+# Architecture Diagrams — Multi-Brand Consent Platform
 
 ## 1. High-Level System Architecture
 
 ```mermaid
 graph TB
-    subgraph Web["React Admin Console"]
-        ADMIN["Shop Management"]
+    subgraph Web["React Admin Console (Multi-Brand)"]
+        ADMIN["Brand Management"]
         FORMS["Form Builder"]
         SUBS["Submission Viewer"]
-        ARTISTS["Artist Manager"]
+        PROVIDERS["Provider Manager"]
+        TENANTS["Tenant Manager"]
+        BRAND_CONFIG["Brand Configuration"]
     end
 
-    subgraph Mobile["React Native Kiosk App"]
-        KIOSK["Client Intake"]
+    subgraph Mobile["Public Forms (Mobile-Optimized)"]
+        BRAND_PORTAL["Brand Portal"]
         SIG["Signature Capture"]
         CAM["Photo Capture"]
         WIZARD["Consent Wizard"]
+        RECEIPT["Digital Receipt"]
     end
 
-    subgraph API["Node.js / Express API"]
-        AUTH["Auth Middleware\n(API Key + JWT)"]
-        ROUTES["REST Routes\n(/api/v1/Consent/*)"]
-        MAILER["Email Service\n(Gmail OAuth2)"]
-        SWAGGER["Swagger Docs"]
+    subgraph API["Node.js / Express API Gateway"]
+        BRAND_RESOLUTION["Brand Resolution\n(Hostname → Brand)"]
+        ROUTES["REST Routes\n(/api/v1/admin/*, /api/v1/public/*)"]
+        MAILER["Email Service\n(Brand-Aware Templates)"]
+        AUTH["Auth Middleware\n(Cookie + CSRF)"]
     end
 
-    subgraph Data["Data Layer"]
-        MONGO["MongoDB Atlas\n(Multi-tenant)"]
-        CLOUD["Cloudinary\n(Photos + Signatures)"]
+    subgraph Data["Data Layer (Enterprise)"]
+        MONGO["MongoDB Atlas\n(Brand-Isolated Collections)"]
+        GRIDFS["MongoDB GridFS\n(Native File Storage)"]
     end
 
-    Web --> AUTH
-    Mobile --> AUTH
-    AUTH --> ROUTES
+    Web --> BRAND_RESOLUTION
+    Mobile --> BRAND_RESOLUTION
+    BRAND_RESOLUTION --> ROUTES
     ROUTES --> MONGO
-    ROUTES --> CLOUD
+    ROUTES --> GRIDFS
     ROUTES --> MAILER
 ```
 
-## 2. Authentication Flow
+## 2. Brand Resolution Flow
 
-Dual authentication model — admin accounts and kiosk accounts use the same PBKDF2 algorithm but separate credential stores and login endpoints.
+Multi-brand platform with hostname-based brand detection and complete data isolation.
 
 ```mermaid
 sequenceDiagram
-    participant Client as Web / Mobile Client
-    participant API as Express API
+    participant Client as Client App
+    participant Gateway as API Gateway
+    participant BrandCache as Brand Cache
     participant DB as MongoDB Atlas
 
-    Note over Client,DB: Admin Login Flow
-    Client->>API: POST /getUserSalt {username}
-    API->>DB: Find user by Userid
-    DB-->>API: {Salt}
-    API-->>Client: {Salt}
-    Note over Client: PBKDF2-SHA512(password, salt, 1000 iter, 64 bytes)
-    Client->>API: POST /login {username, hash, x-api-key}
-    API->>DB: Find user, compare Hash
-    DB-->>API: User document (with nested artists, clauses, forms)
-    API-->>Client: {user, apiKey, JWT (7-day)}
-
-    Note over Client,DB: Kiosk Login Flow
-    Client->>API: POST /getkioskusersalt {username}
-    API->>DB: Find kiosk user within tenant
-    DB-->>API: {KioskSalt}
-    API-->>Client: {Salt}
-    Note over Client: PBKDF2-SHA512(password, salt, 1000 iter, 64 bytes)
-    Client->>API: POST /loginkioskusermobile {username, hash}
-    API->>DB: Validate kiosk credentials
-    DB-->>API: Kiosk user + tenant context
-    API->>DB: Check subscription status
-    DB-->>API: {SubscriptionDate, SubscriptionStatus}
-    API-->>Client: {user, role:"Kiosk", cloudinary creds, apiKey}
+    Note over Client,DB: Brand Resolution Flow
+    Client->>Gateway: Request with hostname
+    Note over Gateway: Extract hostname from request
+    Gateway->>BrandCache: Check cached brand config
+    alt Brand in cache
+        BrandCache-->>Gateway: Return brand config
+    else Brand not cached
+        Gateway->>DB: Query brand by hostname
+        DB-->>Gateway: Return brand document
+        Gateway->>BrandCache: Cache brand config
+    end
+    Gateway->>Gateway: Inject brand context into request
+    Note over Gateway: All subsequent operations are brand-scoped
+    Gateway-->>Client: Response with brand theming applied
 ```
 
-## 3. Client Intake Workflow (Kiosk)
+## 3. Multi-Brand Client Intake Workflow
 
-The complete flow from client arrival to stored consent submission.
+Generic consent capture flow that adapts to any industry with brand-specific terminology and requirements.
 
 ```mermaid
 flowchart TD
-    A["Client Arrives at Shop"] --> B["Kiosk Tablet\n(Already Logged In)"]
-    B --> C["Select Consent Form"]
-    C --> D["Step 1: Select Artist"]
-    D --> E["Step 2: Review Legal Clauses"]
+    A["Client Arrives at Location"] --> B["Brand Portal\n(Custom Domain/Theme)"]
+    B --> C["Select Consent Form\n(Industry Templates)"]
+    C --> D["Step 1: Select Provider\n(Artist/Doctor/Stylist/Trainer)"]
+    D --> E["Step 2: Review Legal Clauses\n(Industry-Specific)"]
     E --> F{"All Required\nClauses Acknowledged?"}
     F -->|No| E
-    F -->|Yes| G["Step 3: Personal Information"]
-    G --> H["Enter: Name, Address,\nPhone, Email, DOB"]
+    F -->|Yes| G["Step 3: Personal Information\n(Configurable Fields)"]
+    G --> H["Enter Details: Name, Contact,\nDOB, Medical History (if req'd)"]
     H --> I{"Age ≥ Limit?"}
-    I -->|No| J["Guardian Info +\nGuardian Signature"]
-    I -->|Yes| K["Capture Photo\n(expo-camera)"]
+    I -->|No| J["Guardian Information +\nGuardian Signature"]
+    I -->|Yes| K["Capture Photo\n(File Upload/Camera)"]
     J --> K
-    K --> L["Digital Signature\n(react-native-signature-canvas)"]
-    L --> M["Upload Photo → Cloudinary"]
-    M --> N["Upload Signature → Cloudinary"]
-    N --> O["POST Submission → API"]
-    O --> P["Save to MongoDB\n(ConsentSubmission)"]
-    P --> Q["Send Email Notification\n(Gmail OAuth2)"]
-    Q --> R["Confirmation Screen"]
+    K --> L["Digital Signature\n(Touch/Mouse Canvas)"]
+    L --> M["Upload Photo → MongoDB"]
+    M --> N["Upload Signature → MongoDB"]
+    N --> O["POST Submission → API\n(Brand-Scoped)"]
+    O --> P["Save to Brand Collection\n(Data Isolation)"]
+    P --> Q["Send Email Notification\n(Brand Template)"]
+    Q --> R["Confirmation Screen\n(Brand Themed)"]
 
     style A fill:#e8f5e9
     style R fill:#e8f5e9
@@ -107,140 +102,163 @@ flowchart TD
     style Q fill:#fce4ec
 ```
 
-## 4. Admin Workflow
+## 4. Brand Admin Workflow
 
-Shop owner management flows through the admin console.
+Platform administration enabling self-service brand management across industries.
 
 ```mermaid
 flowchart TD
-    LOGIN["Admin Login\n(Web Console)"] --> DASH["Dashboard"]
+    LOGIN["Brand Admin Login\n(Brand-Scoped Session)"] --> DASH["Brand Dashboard"]
 
-    DASH --> ART["Artist Management"]
-    ART --> ART_ADD["Add Artist\n(Name, License #)"]
-    ART --> ART_EDIT["Edit / Remove Artist"]
+    DASH --> BRAND_SET["Brand Settings"]
+    BRAND_SET --> THEME["Configure Theme\n(Colors, Logo, Domain)"]
+    BRAND_SET --> TERMS["Industry Terminology\n(Artist vs Doctor vs Stylist)"]
+
+    DASH --> TENANT["Tenant Management"]
+    TENANT --> TENANT_ADD["Add Location\n(Clinic, Studio, Shop)"]
+    TENANT --> TENANT_EDIT["Edit / Archive Location"]
+
+    DASH --> PROV["Provider Management"]
+    PROV --> PROV_ADD["Add Provider\n(License #, Specialties)"]
+    PROV --> PROV_EDIT["Edit / Remove Provider"]
 
     DASH --> CLS["Clause Management"]
-    CLS --> CLS_ADD["Add Clause\n(Title, Text, Type)"]
+    CLS --> CLS_ADD["Add Industry Clause\n(Medical, Liability, Privacy)"]
     CLS --> CLS_EDIT["Edit / Remove Clause"]
 
     DASH --> FORM["Consent Form Builder"]
-    FORM --> F1["Step 1: Form Settings\n(Name, Header, Camera,\nAge Limit, Email Config)"]
-    F1 --> F2["Step 2: Assign Artists\n(Include/Exclude per form)"]
-    F2 --> F3["Step 3: Assign Clauses\n(Required/Optional per form)"]
-    F3 --> SAVE["Save Form Configuration"]
+    FORM --> F1["Step 1: Form Settings\n(Name, Industry Template,\nAge Limit, Required Fields)"]
+    F1 --> F2["Step 2: Assign Providers\n(Who can use this form)"]
+    F2 --> F3["Step 3: Assign Clauses\n(Legal requirements)"]
+    F3 --> SAVE["Publish Form\n(Make Available Publicly)"]
 
-    DASH --> VIEW["Submission Viewer"]
-    VIEW --> SEARCH["Search Submissions\n(Name, Artist, Date Range)"]
-    SEARCH --> DETAIL["View Detail\n(Signature, Photo, Clauses)"]
+    DASH --> VIEW["Submission Management"]
+    VIEW --> SEARCH["Filter Submissions\n(Provider, Date, Location)"]
+    SEARCH --> DETAIL["View Details\n(Signature, Photo, Compliance)"]
 
-    DASH --> KU["Kiosk User Admin"]
-    KU --> KU_ADD["Create Kiosk Account"]
-    KU --> KU_EDIT["Edit / Deactivate"]
-
-    DASH --> SUB["Subscription Status"]
-    SUB --> TIER["View Tier & Expiry"]
+    DASH --> USERS["User Management"]
+    USERS --> USER_ADD["Invite Brand Admins"]
+    USERS --> USER_ROLES["Manage Roles & Access"]
 ```
 
-## 5. CI/CD Pipeline
+## 5. Platform CI/CD Pipeline
 
 ```mermaid
 flowchart LR
     DEV["Developer\nPush"] --> GIT["GitHub\nRepository"]
-    GIT --> BUILD["Build Step\n(npm run build)"]
-    BUILD --> TEST["Test Step\n(Jest)"]
-    TEST --> DEPLOY_API["Deploy API\n(Node.js)"]
-    TEST --> DEPLOY_WEB["Deploy Web\n(Static Assets)"]
-    TEST --> DEPLOY_MOBILE["Expo Build\n(iOS / Android)"]
-    DEPLOY_API --> PROD_API["Production API\nconsent.tattooreleaseonline.com"]
-    DEPLOY_WEB --> PROD_WEB["Production Web\n(Admin Console)"]
-    DEPLOY_MOBILE --> STORES["App Distribution"]
+    GIT --> BUILD["Build & Test\n(TypeScript, Jest)"]
+    BUILD --> TEST["Integration Tests\n(Multi-Brand Isolation)"]
+    TEST --> DEPLOY_API["Deploy API Gateway\n(Brand Resolution)"]
+    TEST --> DEPLOY_ADMIN["Deploy Admin Interface\n(Dynamic Theming)"]
+    TEST --> DEPLOY_PUBLIC["Deploy Public Forms\n(Mobile-Optimized)"]
+    DEPLOY_API --> PROD_API["Production Platform\n(Multiple Brand Domains)"]
+    DEPLOY_ADMIN --> PROD_ADMIN["Brand Admin Interfaces"]
+    DEPLOY_PUBLIC --> PROD_PUBLIC["Public Consent Forms"]
 ```
 
-## 6. Database Entity Relationship
+## 6. Multi-Brand Database Architecture
 
 ```mermaid
 erDiagram
-    TENANT ||--o{ ARTIST : "embeds"
-    TENANT ||--o{ CLAUSE : "embeds"
-    TENANT ||--o{ CONSENT_FORM : "embeds"
-    TENANT ||--o{ KIOSK_USER : "embeds"
-    TENANT ||--o{ SUBMISSION : "references"
-    CONSENT_FORM ||--o{ INCLUDED_ARTIST : "includes"
-    CONSENT_FORM ||--o{ INCLUDED_CLAUSE : "includes"
-    SUBMISSION ||--|| CONSENT_FORM : "based on"
-    SUBMISSION }|--|| CLOUDINARY_ASSET : "stores media"
+    BRAND ||--o{ TENANT : "contains"
+    BRAND ||--o{ ADMIN_USER : "manages"
+    BRAND ||--o{ PROVIDER : "employs"
+    BRAND ||--o{ CONSENT_FORM : "defines"
+    BRAND ||--o{ CLAUSE : "owns"
+    
+    TENANT ||--o{ PROVIDER : "assigned to"
+    TENANT ||--o{ SUBMISSION : "receives"
+    
+    CONSENT_FORM ||--o{ FORM_PROVIDER : "available to"
+    CONSENT_FORM ||--o{ FORM_CLAUSE : "includes"
+    CONSENT_FORM ||--o{ SUBMISSION : "generates"
+    
+    SUBMISSION }|--|| PROVIDER : "processed by"
+    SUBMISSION ||--|| MONGODB_FILE : "contains media"
+
+    BRAND {
+        ObjectId _id PK
+        string name
+        string slug
+        string industry
+        object theme
+        array customDomains
+        object emailConfig
+        boolean active
+        DateTime createdAt
+    }
 
     TENANT {
-        string Userid PK
-        string Email
-        string Company
-        string Fname
-        string Lname
-        string Role
-        string Hash
-        string Salt
-        boolean SubscriptionStatus
-        string SubscriptionType
-        number SubscriptionPrice
-        string CustomerXRef
+        ObjectId _id PK
+        ObjectId brandId FK
+        string name
+        string slug
+        object address
+        object contactInfo
+        object settings
     }
 
-    ARTIST {
+    ADMIN_USER {
         ObjectId _id PK
-        string Fname
-        string Lname
-        string LicenseNbr
+        ObjectId brandId FK
+        string email
+        string name
+        array roles
+        array tenantScope
+        string hashedPassword
     }
 
-    CLAUSE {
+    PROVIDER {
         ObjectId _id PK
-        string Title
-        string Clause
-        string Type
-        boolean Required
+        ObjectId brandId FK
+        ObjectId tenantId FK
+        string name
+        string licenseNumber
+        array specialties
+        string status
     }
 
     CONSENT_FORM {
         ObjectId _id PK
-        string Name
-        boolean Enabled
-        string Header
-        string TitleImage
-        boolean EnableCamera
-        boolean PhotoRequired
-        number AgeLimit
-        boolean AskRelation
-        string EmailTo
-        string EmailSubject
+        ObjectId brandId FK
+        string name
+        string slug
+        string status
+        object capture
+        object presentation
+        object notifications
     }
 
-    KIOSK_USER {
+    CLAUSE {
         ObjectId _id PK
-        string Userid
-        string Hash
-        string Salt
-        string Role
+        ObjectId brandId FK
+        string title
+        string content
+        string type
+        boolean required
+        string industry
     }
 
     SUBMISSION {
         ObjectId _id PK
-        string TenantId FK
-        string ConsentId FK
-        string ConsentFormName
-        string Date
-        string Artist
-        string ConsentName
-        string ConsentSignature
-        string ConsentSignaturePublicId
-        string ConsentPhotoId
-        string ConsentPhotoIdPublicId
-        string ConsentGuardianName
-        string ConsentGuardianSignature
+        ObjectId brandId FK
+        ObjectId tenantId FK
+        ObjectId formId FK
+        ObjectId providerId FK
+        object subject
+        object guardian
+        object photos
+        object signatures
+        array acknowledgedClauses
+        DateTime submittedAt
     }
 
-    CLOUDINARY_ASSET {
-        string public_id PK
-        string secure_url
-        string resource_type
+    MONGODB_FILE {
+        ObjectId _id PK
+        ObjectId brandId FK
+        string filename
+        string contentType
+        number length
+        DateTime uploadDate
     }
 ```
