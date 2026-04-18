@@ -1,44 +1,84 @@
-%% Tattoo Release Online (TRO) — High-Level Architecture
+%% Multi-Brand Consent Platform — Enterprise Architecture
+%% Demonstrates platform business model with brand isolation and self-service onboarding
 %% Render with any Mermaid-compatible tool (GitHub, VS Code, mermaid.live)
 
 graph TB
-    subgraph Web["React Admin Console (Browser)"]
-        ADMIN["Shop Admin"]
-        FORMS["Form Builder"]
-        ARTISTS["Artist Manager"]
-        CLAUSES["Clause Manager"]
-        SUBS["Submission Viewer"]
-        KIOSK_ADMIN["Kiosk User Manager"]
+    subgraph Platform["🌐 Platform Infrastructure"]
+        GATEWAY["🚪 API Gateway<br/>(Brand Resolution)"]
+        BRAND_CONFIG["⚙️ Brand Engine<br/>(Themes + Domains)"]
+        PLATFORM_ADMIN["🔧 Platform Admin<br/>(Multi-Brand Oversight)"]
     end
 
-    subgraph Mobile["React Native Kiosk App (Tablet)"]
-        LOGIN["Kiosk Login"]
-        SELECT["Form Selection"]
-        WIZARD["Consent Wizard"]
-        SIG["Signature Capture"]
-        CAM["Photo Capture"]
+    subgraph Brands["🎯 Multi-Brand Ecosystem"]
+        TRO["💉 TRO Brand<br/>(Tattoo Industry)"]
+        MEDICAL["🏥 Medical Brand<br/>(Healthcare)"]
+        SALON["💅 Salon Brand<br/>(Beauty)"]
+        FITNESS["💪 Fitness Brand<br/>(Wellness)"]
     end
 
-    subgraph API["Node.js / Express API Server"]
-        AUTH["Auth Layer\n(API Key + PBKDF2 + JWT)"]
-        ROUTES["REST Routes\n(/api/v1/Consent/*)"]
-        MAILER["Email Service\n(Gmail OAuth2)"]
-        DOCS["Swagger UI\n(/api-docs)"]
+    subgraph Admin["📊 Brand Admin Interface (React + TypeScript)"]
+        BRAND_SETTINGS["🎨 Brand Settings<br/>(Theme + Domain)"]
+        TENANT_MGMT["🏢 Tenant Management<br/>(Locations)"]
+        PROVIDER_MGMT["👥 Provider Management<br/>(Staff/Artists)"]
+        FORM_BUILDER["📝 Form Builder<br/>(Industry Templates)"]
+        SUBMISSION_VIEW["📋 Submissions<br/>(Analytics + Export)"]
+        USER_MGMT["🔐 User Management<br/>(Roles + Access)"]
     end
 
-    subgraph Data["Data & Storage"]
-        MONGO["MongoDB Atlas\n(Tenant Documents +\nSubmissions Collection)"]
-        CLOUDINARY["Cloudinary CDN\n(Signatures + Photos)"]
+    subgraph Public["📱 Public Forms (Mobile-Optimized)"]
+        BRAND_PORTAL["🎯 Brand Portal<br/>(Custom Theming)"]
+        FORM_RENDER["📝 Dynamic Forms<br/>(Industry-Specific)"]
+        SIGNATURE["✍️ Digital Signature<br/>(Touch + Mouse)"]
+        PHOTO_CAPTURE["📸 Photo Capture<br/>(File + Camera)"]
+        RECEIPT["🧾 Completion Receipt<br/>(Email + Print)"]
     end
 
-    Web --> AUTH
-    Mobile --> AUTH
-    AUTH --> ROUTES
-    ROUTES --> MONGO
-    ROUTES --> CLOUDINARY
-    ROUTES --> MAILER
+    subgraph API["⚡ Backend Services (Node.js + TypeScript)"]
+        AUTH["🔐 Authentication<br/>(Cookie + CSRF)"]
+        BRAND_RESOLUTION["🏷️ Brand Middleware<br/>(Hostname → Brand)"]
+        CRUD_APIS["🔄 CRUD APIs<br/>(Brand-Scoped)"]
+        EMAIL_SERVICE["📧 Email Service<br/>(Brand Templates)"]
+        FILE_SERVICE["📁 File Management<br/>(MongoDB Native)"]
+        AUDIT["📊 Audit Logging<br/>(Compliance)"]
+    end
 
-    style Web fill:#61dafb,stroke:#333,color:#000
-    style Mobile fill:#a4c639,stroke:#333,color:#000
-    style API fill:#68a063,stroke:#333,color:#fff
-    style Data fill:#f5a623,stroke:#333,color:#000
+    subgraph Data["💾 Data Layer (Enterprise-Grade)"]
+        MONGO["🍃 MongoDB Atlas<br/>(Brand Isolation)"]
+        GRIDFS["📦 GridFS Storage<br/>(Images + Signatures)"]
+        SESSIONS["🎫 Session Store<br/>(Cookie-Based)"]
+        CACHE["⚡ Brand Cache<br/>(In-Memory)"]
+    end
+
+    %% Platform Flow
+    Platform --> Brands
+    Brands --> Admin
+    Brands --> Public
+    Admin --> API
+    Public --> API
+    API --> Data
+
+    %% Brand Resolution
+    GATEWAY -.->|"tro.app.platform.com"| TRO
+    GATEWAY -.->|"clinic.app.platform.com"| MEDICAL
+    GATEWAY -.->|"salon.app.platform.com"| SALON
+    GATEWAY -.->|"studio.app.platform.com"| FITNESS
+
+    %% Data Isolation
+    MONGO -.->|"Brand-Scoped Collections"| TRO
+    MONGO -.->|"Isolated Data Access"| MEDICAL
+    MONGO -.->|"Secure Multi-Tenancy"| SALON
+    MONGO -.->|"Audit Trails"| FITNESS
+
+    %% Styling
+    style Platform fill:#e3f2fd,stroke:#1976d2,stroke-width:3px,color:#000
+    style Brands fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#000
+    style Admin fill:#e8f5e8,stroke:#388e3c,stroke-width:2px,color:#000
+    style Public fill:#fff3e0,stroke:#f57c00,stroke-width:2px,color:#000
+    style API fill:#fce4ec,stroke:#c2185b,stroke-width:2px,color:#000
+    style Data fill:#f1f8e9,stroke:#689f38,stroke-width:2px,color:#000
+
+    %% Brand Examples
+    style TRO fill:#ffebee,stroke:#d32f2f,color:#000
+    style MEDICAL fill:#e8f5e8,stroke:#4caf50,color:#000
+    style SALON fill:#f3e5f5,stroke:#9c27b0,color:#000
+    style FITNESS fill:#e3f2fd,stroke:#2196f3,color:#000
